@@ -1,0 +1,60 @@
+/* Fargepaletten under er tilpasset Vitals (vitals.no) sin visuelle profil:
+   varm, lys bakgrunn og en jordnær brun/rav aksentfarge - i tråd med deres
+   "premium natural wellness"-uttrykk for kosttilskudd (logoen deres er en
+   brun kapsel-ikon). NB: hentet ut fra sidens tekst/bilder, ikke fra deres
+   faktiske fargekoder - bytt ut verdiene under hvis dere har en offisiell
+   fargekode-guide fra Vitals. */
+:root {
+  --background: #faf6f0;
+  --surface: #ffffff;
+  --foreground: #2e2118;
+  --muted: #7d6e60;
+  --border: #e8dfd2;
+  --accent: #8a5a34;
+  --accent-hover: #6e4728;
+  --danger: #b3261e;
+  --danger-bg: #fceceb;
+  --success-bg: #f3ece2;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #1a1611;
+    --surface: #241f18;
+    --foreground: #f2ede4;
+    --muted: #a89987;
+    --border: #362e24;
+    --accent: #c08a54;
+    --accent-hover: #d4a06e;
+    --danger: #f28b82;
+    --danger-bg: #3a2323;
+    --success-bg: #2c2419;
+  }
+  html {
+    color-scheme: dark;
+  }
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+body {
+  min-height: 100%;
+  color: var(--foreground);
+  background: var(--background);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: inherit;
+}
