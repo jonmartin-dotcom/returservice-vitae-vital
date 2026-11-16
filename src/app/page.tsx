@@ -6,6 +6,7 @@ import type {
   OrderLookupResponse,
   ReturnReasonCode,
   ReturnRequestResult,
+  DeliveryMethod,
 } from "@/lib/types";
 import { RETURN_REASONS } from "@/lib/types";
 
@@ -104,9 +105,22 @@ export default function ReturPage() {
     setStep("contact");
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSubmit(deliveryMethod: DeliveryMethod) {
     setError(null);
+
+    if (!firstName || !lastName || !phone || !email || !street || !postalCode || !city) {
+      setError("Fyll ut alle påkrevde feltene.");
+      return;
+    }
+
+    // QR-koden sendes direkte til kunden på e-post av Bring (ikke SMS - Bring
+    // sender ikke SMS for norske returer) - e-postfeltet er derfor kritisk
+    // for dette valget spesielt (det er uansett påkrevd over).
+    if (deliveryMethod === "QR" && !email) {
+      setError("E-post må fylles ut for å sende QR-kode.");
+      return;
+    }
+
     setLoading(true);
     try {
       const chosen = lines.filter((l) => l.selected);
@@ -127,6 +141,7 @@ export default function ReturPage() {
             quantity: l.quantity,
           })),
           address: { street, postalCode, city, countryCode: "NO" },
+          deliveryMethod,
         }),
       });
       const data: ReturnRequestResult = await res.json();
@@ -161,8 +176,8 @@ export default function ReturPage() {
     <div className={styles.page}>
       <div className={styles.card}>
         <div className={styles.logoSlot}>
-          {/* Enkelt kapsel-merke som plassholder for Vitals sin logo - bytt
-              ut med den offisielle logofilen når dere har den klar (se
+          {/* Enkelt kapsel-merke som plassholder for Vitae Vital sin logo -
+              bytt ut med den offisielle logofilen når dere har den klar (se
               README.md for hvor). */}
           <div className={styles.logoPlaceholder} aria-hidden="true">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -196,7 +211,7 @@ export default function ReturPage() {
               <ol>
                 <li>Fyll inn ordrenummeret ditt for å hente opp ordren.</li>
                 <li>Velg hvilke varer du ønsker å returnere og oppgi årsak.</li>
-                <li>Skriv ut fraktetiketten du får, og send pakken i retur.</li>
+                <li>Velg om du vil ha fraktetikett eller QR-kode, og send pakken i retur.</li>
               </ol>
             </div>
             {error && <div className={styles.errorBox}>{error}</div>}
@@ -305,95 +320,111 @@ export default function ReturPage() {
         )}
 
         {step === "contact" && (
-          <>
+          <div>
             <div className={styles.stepIndicator}>Steg 3 av 3</div>
             {error && <div className={styles.errorBox}>{error}</div>}
-            <form onSubmit={handleSubmit}>
-              <div className={styles.row2}>
-                <div className={styles.field}>
-                  <label htmlFor="firstName">Fornavn*</label>
-                  <input
-                    id="firstName"
-                    required
-                    value={firstName}
-                    onChange={(e) => setFirstName(e.target.value)}
-                  />
-                </div>
-                <div className={styles.field}>
-                  <label htmlFor="lastName">Etternavn*</label>
-                  <input
-                    id="lastName"
-                    required
-                    value={lastName}
-                    onChange={(e) => setLastName(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className={styles.row2}>
-                <div className={styles.field}>
-                  <label htmlFor="phone">Telefon*</label>
-                  <input
-                    id="phone"
-                    required
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                  />
-                </div>
-                <div className={styles.field}>
-                  <label htmlFor="email">E-post*</label>
-                  <input
-                    id="email"
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                  />
-                </div>
-              </div>
+            <div className={styles.row2}>
               <div className={styles.field}>
-                <label htmlFor="street">Adresse (for henting/frakt av returen)*</label>
+                <label htmlFor="firstName">Fornavn*</label>
                 <input
-                  id="street"
+                  id="firstName"
                   required
-                  value={street}
-                  onChange={(e) => setStreet(e.target.value)}
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
                 />
               </div>
-              <div className={styles.row3}>
-                <div className={styles.field}>
-                  <label htmlFor="city">Sted*</label>
-                  <input
-                    id="city"
-                    required
-                    value={city}
-                    onChange={(e) => setCity(e.target.value)}
-                  />
-                </div>
-                <div className={styles.field}>
-                  <label htmlFor="postalCode">Postnr*</label>
-                  <input
-                    id="postalCode"
-                    required
-                    value={postalCode}
-                    onChange={(e) => setPostalCode(e.target.value)}
-                  />
-                </div>
+              <div className={styles.field}>
+                <label htmlFor="lastName">Etternavn*</label>
+                <input
+                  id="lastName"
+                  required
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                />
               </div>
+            </div>
+            <div className={styles.row2}>
+              <div className={styles.field}>
+                <label htmlFor="phone">Telefon*</label>
+                <input
+                  id="phone"
+                  required
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                />
+              </div>
+              <div className={styles.field}>
+                <label htmlFor="email">E-post*</label>
+                <input
+                  id="email"
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className={styles.field}>
+              <label htmlFor="street">Adresse (for henting/frakt av returen)*</label>
+              <input
+                id="street"
+                required
+                value={street}
+                onChange={(e) => setStreet(e.target.value)}
+              />
+            </div>
+            <div className={styles.row3}>
+              <div className={styles.field}>
+                <label htmlFor="city">Sted*</label>
+                <input
+                  id="city"
+                  required
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                />
+              </div>
+              <div className={styles.field}>
+                <label htmlFor="postalCode">Postnr*</label>
+                <input
+                  id="postalCode"
+                  required
+                  value={postalCode}
+                  onChange={(e) => setPostalCode(e.target.value)}
+                />
+              </div>
+            </div>
 
-              <div className={styles.actions}>
-                <button
-                  type="button"
-                  className={styles.secondaryButton}
-                  onClick={() => setStep("details")}
-                >
-                  Tilbake
-                </button>
-                <button type="submit" className={styles.primaryButton} disabled={loading}>
-                  {loading ? "Sender …" : "Send retur"}
-                </button>
-              </div>
-            </form>
-          </>
+            <div className={styles.field}>
+              <label>Hvordan vil du motta returen?*</label>
+            </div>
+
+            <div className={styles.actions}>
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => setStep("details")}
+                disabled={loading}
+              >
+                Tilbake
+              </button>
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => handleSubmit("LABEL")}
+                disabled={loading}
+              >
+                {loading ? "Sender …" : "Last ned etikett"}
+              </button>
+              <button
+                type="button"
+                className={styles.primaryButton}
+                onClick={() => handleSubmit("QR")}
+                disabled={loading}
+              >
+                {loading ? "Sender …" : "Send QR-kode på e-post"}
+              </button>
+            </div>
+          </div>
         )}
 
         {step === "done" && result?.success && (
@@ -404,7 +435,31 @@ export default function ReturPage() {
               {result.trackingNumber ? ` · Sporingsnr: ${result.trackingNumber}` : ""}
             </p>
             {result.warning && <div className={styles.errorBox}>{result.warning}</div>}
-            {result.labelPdfBase64 ? (
+            {result.deliveryMethod === "QR" ? (
+              <>
+                <p>
+                  QR-koden sendes også til deg på e-post fra Bring. Vis den i
+                  utleveringsappen eller på skjermen din når du leverer pakken hos et
+                  Bring-utleveringssted.
+                </p>
+                {result.qrCodeLink && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={result.qrCodeLink}
+                    alt="QR-kode for retur"
+                    width={180}
+                    height={180}
+                    style={{ margin: "0 auto", display: "block" }}
+                  />
+                )}
+                {result.labelFreeCode && (
+                  <p>
+                    Alternativt kan du oppgi denne koden hos utleveringsstedet:{" "}
+                    <strong>{result.labelFreeCode}</strong>
+                  </p>
+                )}
+              </>
+            ) : result.labelPdfBase64 ? (
               <button className={styles.primaryButton} onClick={downloadLabel}>
                 Last ned fraktetikett (PDF)
               </button>
