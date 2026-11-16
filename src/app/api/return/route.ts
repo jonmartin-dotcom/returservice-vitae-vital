@@ -1,181 +1,197 @@
 import { NextRequest, NextResponse } from "next/server";
-import { lookupOrderByNumber, createReturnOrder, getArticlePackageInfo } from "@/lib/ongoing";
-import { createReturnShipment, fetchLabelForShipment, type PackageDimensions } from "@/lib/webshipper";
-import { RETURN_REASONS, type ReturnRequest, type ReturnRequestResult } from "@/lib/types";
+import { lookupOrderByNumber, getArticlePackageInfo, createReturnOrder } from "@/lib/ongoing";
+import { createReturnShipment } from "@/lib/bring";
 import { env } from "@/lib/env";
+import { RETURN_REASONS, type ReturnRequest, type ReturnRequestResult } from "@/lib/types";
 
-/**
- * Slår sammen vekt/mål for de valgte varelinjene til én samlet pakke som
- * sendes til Webshipper. Vekt summeres. For mål (som ikke kan summeres
- * direkte når flere ulike varer pakkes sammen) regner vi ut totalvolumet og
- * lager en "terning" med tilsvarende volum - en forenkling, men den sikrer
- * at pakken alltid får realistiske mål fremfor faste minstemål.
- * Varer uten registrerte mål i Ongoing faller tilbake på konfigurerte
- * standardmål (se .env.example).
- */
-async function buildPackageDimensions(
-  lines: { articleNumber: string; quantity: number }[]
-): Promise<PackageDimensions> {
-  const info = await getArticlePackageInfo(lines.map((l) => l.articleNumber));
+// Ongoing sin faktiske enhet for lengde/bredde/høyde på artikler er IKKE
+// bekreftet (samme svakhet som ble funnet og fikset for Puer Fons (Ny) og
+// senere bygget inn fra start i Inneklimaeksperten/Coverly/Nesco - se
+// prosjektnotatet). Bygget inn her fra start i forbindelse med
+// Bring-omleggingen: faller tilbake på standardmål/-vekt hvis det beregnede
+// tallet er urealistisk stort, i stedet for å sende et feil tall til Bring.
+const MAX_REASONABLE_DIMENSION_CM = 150;
+const MAX_REASONABLE_WEIGHT_KG = 30;
 
-  let totalWeightGrams = 0;
-  let totalVolumeCm3 = 0;
-
-  for (const line of lines) {
-    const a = info.get(line.articleNumber);
-    const weightGrams = a?.weightKg ? a.weightKg * 1000 : env.defaultItemWeightGrams;
-    const lengthCm = a?.lengthM ? a.lengthM * 100 : env.defaultItemLengthCm;
-    const widthCm = a?.widthM ? a.widthM * 100 : env.defaultItemWidthCm;
-    const heightCm = a?.heightM ? a.heightM * 100 : env.defaultItemHeightCm;
-
-    totalWeightGrams += weightGrams * line.quantity;
-    totalVolumeCm3 += lengthCm * widthCm * heightCm * line.quantity;
+function safeDimensionCm(valueM: number | undefined, fallbackCm: number): number {
+  if (!valueM) return fallbackCm;
+  const cm = valueM * 100;
+  if (!Number.isFinite(cm) || cm <= 0 || cm > MAX_REASONABLE_DIMENSION_CM) {
+    console.warn(
+      `[api/return] Ignorerer urealistisk mål fra Ongoing (${cm} cm, rå verdi ${valueM} m) - bruker standardmål ${fallbackCm} cm i stedet.`
+    );
+    return fallbackCm;
   }
-
-  const cubeSideCm = Math.max(5, Math.ceil(Math.cbrt(totalVolumeCm3)));
-
-  return {
-    weightGrams: Math.max(1, Math.round(totalWeightGrams)),
-    lengthCm: cubeSideCm,
-    widthCm: cubeSideCm,
-    heightCm: cubeSideCm,
-  };
+  return cm;
 }
 
-function isValidReturnRequest(body: unknown): body is ReturnRequest {
-  if (!body || typeof body !== "object") return false;
-  const b = body as Record<string, unknown>;
-  return (
-    typeof b.orderNumber === "string" &&
-    typeof b.firstName === "string" &&
-    typeof b.lastName === "string" &&
-    typeof b.phone === "string" &&
-    typeof b.email === "string" &&
-    typeof b.reasonCode === "string" &&
-    Array.isArray(b.lines) &&
-    b.lines.length > 0 &&
-    typeof b.address === "object" &&
-    b.address !== null
-  );
+function safeWeightGrams(valueKg: number | undefined, fallbackGrams: number): number {
+  if (!valueKg) return fallbackGrams;
+  const grams = valueKg * 1000;
+  if (!Number.isFinite(grams) || grams <= 0 || valueKg > MAX_REASONABLE_WEIGHT_KG) {
+    console.warn(
+      `[api/return] Ignorerer urealistisk vekt fra Ongoing (${valueKg} kg) - bruker standardvekt ${fallbackGrams} g i stedet.`
+    );
+    return fallbackGrams;
+  }
+  return grams;
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => null);
+  try {
+    const body = (await req.json()) as ReturnRequest;
+    const deliveryMethod = body.deliveryMethod === "QR" ? "QR" : "LABEL";
 
-  if (!isValidReturnRequest(body)) {
-    const result: ReturnRequestResult = { success: false, error: "Skjemaet er ikke fullstendig utfylt." };
-    return NextResponse.json(result, { status: 400 });
-  }
-
-  const reason = RETURN_REASONS.find((r) => r.code === body.reasonCode);
-  if (!reason) {
-    const result: ReturnRequestResult = { success: false, error: "Ugyldig returårsak." };
-    return NextResponse.json(result, { status: 400 });
-  }
-
-  // Slå opp ordren på nytt server-side (ikke stol på det klienten sendte inn),
-  // og valider at de valgte linjene faktisk finnes på ordren i riktig antall.
-  const order = await lookupOrderByNumber(body.orderNumber);
-  if (!order.found) {
-    const result: ReturnRequestResult = {
-      success: false,
-      error: "Fant ikke ordren. Kontroller ordrenummeret og prøv igjen.",
-    };
-    return NextResponse.json(result, { status: 404 });
-  }
-
-  for (const selected of body.lines) {
-    const line = order.lines.find((l) => l.orderLineId === selected.orderLineId);
-    if (!line) {
-      return NextResponse.json(
-        { success: false, error: "En av de valgte varelinjene finnes ikke på ordren." } as ReturnRequestResult,
+    if (
+      !body?.orderNumber ||
+      !body?.firstName ||
+      !body?.lastName ||
+      !body?.phone ||
+      !body?.email ||
+      !body?.reasonCode ||
+      !body?.address?.street ||
+      !body?.address?.postalCode ||
+      !body?.address?.city ||
+      !Array.isArray(body.lines) ||
+      body.lines.length === 0
+    ) {
+      return NextResponse.json<ReturnRequestResult>(
+        { success: false, error: "Mangler nødvendig informasjon i returforespørselen." },
         { status: 400 }
       );
     }
-    const maxReturnable = line.orderedNumberOfItems - line.alreadyReturnedNumberOfItems;
-    if (selected.quantity <= 0 || selected.quantity > maxReturnable) {
-      return NextResponse.json(
+
+    // QR-kode-returen sendes direkte til kunden på e-post av Bring, og
+    // kunden må derfor ha oppgitt e-post - allerede påkrevd i skjemaet, men
+    // vi sjekker eksplisitt siden det er kritisk for denne leveringsmåten.
+    if (deliveryMethod === "QR" && !body.email) {
+      return NextResponse.json<ReturnRequestResult>(
         {
           success: false,
-          error: `Ugyldig antall for ${line.articleName}. Maks ${maxReturnable} kan returneres.`,
-        } as ReturnRequestResult,
+          error: "E-post må fylles ut for å sende QR-kode.",
+        },
         { status: 400 }
       );
     }
-  }
 
-  // 1) Hent vekt/mål for varene som returneres fra Ongoing, og opprett
-  //    selve returforsendelsen hos Webshipper (dette gir oss sporingsnummeret
-  //    med det samme - vi venter IKKE på etikett-PDF-en her, se punkt 3).
-  const packageDimensions = await buildPackageDimensions(body.lines);
+    // Slå opp ordren på nytt for å finne riktig Ongoing orderId (kan ikke
+    // trustes blindt fra klienten).
+    const order = await lookupOrderByNumber(body.orderNumber);
+    if (!order.found) {
+      return NextResponse.json<ReturnRequestResult>(
+        { success: false, error: "Fant ikke ordren i Ongoing. Prøv på nytt." },
+        { status: 404 }
+      );
+    }
 
-  const shipment = await createReturnShipment({
-    reference: body.orderNumber,
-    customer: {
-      name: `${body.firstName} ${body.lastName}`.trim(),
-      street: body.address.street,
-      postalCode: body.address.postalCode,
-      city: body.address.city,
-      countryCode: body.address.countryCode || "NO",
-      email: body.email,
-      phone: body.phone,
-    },
-    package: packageDimensions,
-  });
+    const reason = RETURN_REASONS.find((r) => r.code === body.reasonCode);
+    const reasonLabel = reason?.label || body.reasonCode;
 
-  if (!shipment.success) {
+    // Hent vekt/mål for varene som returneres, med fallback til standardmål.
+    const articleNumbers = body.lines.map((l) => l.articleNumber);
+    const packageInfoByArticle = await getArticlePackageInfo(articleNumbers);
+
+    const shipmentItems = body.lines.map((line) => {
+      const info = packageInfoByArticle.get(line.articleNumber);
+      return {
+        articleNumber: line.articleNumber,
+        description: line.articleNumber,
+        quantity: line.quantity,
+        weightGrams: safeWeightGrams(info?.weightKg, env.defaultItemWeightGrams),
+        lengthCm: safeDimensionCm(info?.lengthM, env.defaultItemLengthCm),
+        widthCm: safeDimensionCm(info?.widthM, env.defaultItemWidthCm),
+        heightCm: safeDimensionCm(info?.heightM, env.defaultItemHeightCm),
+      };
+    });
+
+    const returnOrderNumber = `RET-${body.orderNumber}-${Date.now().toString().slice(-6)}`;
+
+    // 1) Opprett returforsendelse direkte hos Bring - med riktig produktkode
+    // ut fra om kunden valgte PDF-etikett (9300) eller QR-kode-retur (9350).
+    let shipment;
+    try {
+      shipment = await createReturnShipment({
+        fromAddress: {
+          name: `${body.firstName} ${body.lastName}`,
+          street: body.address.street,
+          postalCode: body.address.postalCode,
+          city: body.address.city,
+          countryCode: body.address.countryCode || "NO",
+          phone: body.phone,
+          email: body.email,
+        },
+        items: shipmentItems,
+        referenceText: returnOrderNumber,
+        deliveryMethod,
+      });
+    } catch (err) {
+      console.error("[api/return] Bring-feil:", err);
+      return NextResponse.json<ReturnRequestResult>(
+        {
+          success: false,
+          error:
+            deliveryMethod === "QR"
+              ? "Klarte ikke å opprette QR-returen. Vennligst prøv igjen om litt."
+              : "Klarte ikke å opprette returetiketten. Vennligst prøv igjen om litt.",
+        },
+        { status: 502 }
+      );
+    }
+
+    // 2) Opprett returordre i Ongoing - KRITISK, må ikke forsinkes av
+    // etikett-henting (Vercel Hobby har kort kjøretidsgrense).
+    const ongoingResult = await createReturnOrder({
+      orderId: order.orderId,
+      returnOrderNumber,
+      reasonCode: body.reasonCode,
+      reasonLabel,
+      comment: body.message || "",
+      lines: body.lines,
+      trackingNumber: shipment.consignmentNumber,
+    });
+
+    if (!ongoingResult.success) {
+      console.error("[api/return] Ongoing-feil:", ongoingResult.errorMessage);
+      return NextResponse.json<ReturnRequestResult>(
+        {
+          success: false,
+          error:
+            "Returetiketten ble opprettet, men vi fikk ikke registrert returen i systemet vårt. Kontakt oss gjerne.",
+        },
+        { status: 502 }
+      );
+    }
+
+    // Bring returnerer etikett/QR-kode direkte i bookingsvaret (synkront) -
+    // ingen egen "hent etikett etterpå"-runde nødvendig slik det var med
+    // Webshipper.
     const result: ReturnRequestResult = {
-      success: false,
-      error: `Klarte ikke å opprette fraktetikett: ${shipment.errorMessage}`,
+      success: true,
+      returnOrderId: ongoingResult.returnOrderId,
+      returnOrderNumber,
+      trackingNumber: shipment.consignmentNumber,
+      deliveryMethod,
+      labelPdfBase64: shipment.labelPdfBase64,
+      labelUrl: shipment.labelUrl,
+      qrCodeLink: shipment.qrCodeLink,
+      labelFreeCode: shipment.labelFreeCode,
     };
-    return NextResponse.json(result, { status: 502 });
+
+    if (deliveryMethod === "LABEL" && !shipment.labelPdfBase64 && !shipment.labelUrl) {
+      result.warning =
+        "Returen er registrert, men etiketten kunne ikke hentes akkurat nå. Du vil få den tilsendt på e-post.";
+    }
+    if (deliveryMethod === "QR" && !shipment.qrCodeLink && !shipment.labelFreeCode) {
+      result.warning =
+        "Returen er registrert, men QR-koden kunne ikke hentes akkurat nå. Du vil få den tilsendt på e-post fra Bring.";
+    }
+
+    return NextResponse.json<ReturnRequestResult>(result);
+  } catch (err) {
+    console.error("[api/return] uventet feil:", err);
+    return NextResponse.json<ReturnRequestResult>(
+      { success: false, error: "Noe gikk galt. Vennligst prøv igjen." },
+      { status: 500 }
+    );
   }
-
-  // 2) Opprett returordre i Ongoing WMS med en gang, med sporingsnummeret fra
-  //    forsendelsen. Dette gjøres FØR vi henter selve etikett-PDF-en, slik at
-  //    returen uansett er trygt registrert i Ongoing selv om steg 3 under
-  //    skulle bruke for lang tid eller feile.
-  const returnOrderNumber = `${body.orderNumber}-retur1`;
-  const comment = body.message
-    ? `Årsak: ${reason.label}. Melding fra kunde: ${body.message}`
-    : `Årsak: ${reason.label}.`;
-
-  const ongoingResult = await createReturnOrder({
-    orderId: order.orderId,
-    returnOrderNumber,
-    reasonCode: reason.code,
-    reasonLabel: reason.label,
-    comment,
-    lines: body.lines,
-    trackingNumber: shipment.trackingNumber,
-    trackingUrl: shipment.trackingUrl,
-  });
-
-  if (!ongoingResult.success) {
-    const result: ReturnRequestResult = {
-      success: false,
-      error: `Fraktetikett ble opprettet, men returordren kunne ikke registreres i Ongoing WMS: ${ongoingResult.errorMessage}. Ta kontakt med kundeservice med referanse ${returnOrderNumber}.`,
-      trackingNumber: shipment.trackingNumber,
-    };
-    return NextResponse.json(result, { status: 502 });
-  }
-
-  // 3) Returen er nå trygt registrert i Ongoing. Prøv å hente selve
-  //    etikett-PDF-en (med et lite antall forsøk) - om den mot formodning
-  //    ikke skulle være klar ennå, får kunden beskjed om å kontakte
-  //    kundeservice i stedet for at hele returen står i fare.
-  const label = await fetchLabelForShipment(shipment.shipmentId!);
-
-  const result: ReturnRequestResult = {
-    success: true,
-    returnOrderId: ongoingResult.returnOrderId,
-    returnOrderNumber,
-    trackingNumber: shipment.trackingNumber,
-    labelPdfBase64: label.base64PDF,
-    labelUrl: shipment.trackingUrl,
-    warning: !label.base64PDF
-      ? "Returen er registrert og sporingsnummer er opprettet, men fraktetiketten kunne ikke hentes automatisk. Ta kontakt med kundeservice, så sender vi den til deg."
-      : undefined,
-  };
-  return NextResponse.json(result);
 }
