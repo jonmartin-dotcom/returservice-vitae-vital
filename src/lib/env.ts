@@ -74,21 +74,24 @@ export const env = {
   },
 
   // --- Standardmål brukt når en vare mangler vekt/mål i Ongoing (pakken må
-  // ha enten volum eller mål for at Bring skal godta forsendelsen) ---
+  // ha enten volum eller mål for at Bring skal godta forsendelsen). Beholder
+  // de samme WEBSHIPPER_DEFAULT_ITEM_*-variabelnavnene som allerede er satt
+  // opp i Vercel for dette prosjektet - ingen grunn til å kreve at de
+  // legges inn på nytt under et annet navn. ---
   get defaultItemWeightGrams() {
-    const v = optional("DEFAULT_ITEM_WEIGHT_G");
+    const v = optional("WEBSHIPPER_DEFAULT_ITEM_WEIGHT_G");
     return v ? Number(v) : 500;
   },
   get defaultItemLengthCm() {
-    const v = optional("DEFAULT_ITEM_LENGTH_CM");
+    const v = optional("WEBSHIPPER_DEFAULT_ITEM_LENGTH_CM");
     return v ? Number(v) : 30;
   },
   get defaultItemWidthCm() {
-    const v = optional("DEFAULT_ITEM_WIDTH_CM");
+    const v = optional("WEBSHIPPER_DEFAULT_ITEM_WIDTH_CM");
     return v ? Number(v) : 20;
   },
   get defaultItemHeightCm() {
-    const v = optional("DEFAULT_ITEM_HEIGHT_CM");
+    const v = optional("WEBSHIPPER_DEFAULT_ITEM_HEIGHT_CM");
     return v ? Number(v) : 10;
   },
 
